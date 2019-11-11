@@ -3,6 +3,7 @@ package assert
 import (
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/dogmatiq/dogma"
 	"github.com/dogmatiq/enginekit/message"
@@ -20,6 +21,10 @@ type MessageAssertion struct {
 	// Role is the expected role of the expected message.
 	// It must be either CommandRole or EventRole.
 	role message.Role
+
+	// timeCriteria holds information about the criteria placed on when the
+	// message is created.
+	timeCriteria messageTimeCriteria
 
 	// cmp is the comparator used to compare messages for equality.
 	cmp compare.Comparator
@@ -42,7 +47,7 @@ type MessageAssertion struct {
 	// message has an unexpected role.
 	equal bool
 
-	// tracker observers the handlers and messages that are involved in the test.
+	// tracker observes the handlers and messages that are involved in the test.
 	tracker tracker
 }
 
@@ -59,6 +64,19 @@ func EventRecorded(m dogma.Message) Assertion {
 	return &MessageAssertion{
 		expected: m,
 		role:     message.EventRole,
+	}
+}
+
+// EventRecordedAt returns an assertion that passes if m is recorded as an event
+// at a specific time.
+func EventRecordedAt(m dogma.Message, t time.Time) Assertion {
+	return &MessageAssertion{
+		expected: m,
+		role:     message.EventRole,
+		timeCriteria: messageTimeCriteria{
+			startTime: &t,
+			endTime:   &t,
+		},
 	}
 }
 
@@ -96,12 +114,16 @@ func (a *MessageAssertion) BuildReport(ok bool, r render.Renderer) *Report {
 		),
 	}
 
+	a.timeCriteria.UpdateReport(rep)
+
 	if ok || a.ok {
 		return rep
 	}
 
 	if a.best == nil {
 		buildResultNoMatch(rep, &a.tracker)
+	} else if a.equal {
+		a.buildResultExactMatch(r, rep)
 	} else if a.best.Role == a.role {
 		a.buildResultExpectedRole(r, rep)
 	} else {
@@ -141,7 +163,7 @@ func (a *MessageAssertion) messageProduced(env *envelope.Envelope) {
 	a.sim = compare.SameTypes
 	a.equal = true
 
-	if a.role == env.Role {
+	if a.role == env.Role && a.timeCriteria.Ok(env) {
 		a.ok = true
 	}
 }
@@ -157,6 +179,15 @@ func (a *MessageAssertion) updateBestMatch(env *envelope.Envelope) {
 		a.best = env
 		a.sim = sim
 	}
+}
+
+// buildDiff adds a "message diff" section to the result.
+func (a *MessageAssertion) buildDiff(r render.Renderer, rep *Report) {
+	render.WriteDiff(
+		&rep.Section(messageDiffSection).Content,
+		render.Message(r, a.expected),
+		render.Message(r, a.best.Message),
+	)
 }
 
 // buildResultExpectedRole builds the assertion result when there is a
@@ -184,20 +215,7 @@ func (a *MessageAssertion) buildResultExpectedRole(r render.Renderer, rep *Repor
 		s.AppendListItem("check the message type, should it be a pointer?")
 	}
 
-	render.WriteDiff(
-		&rep.Section(messageDiffSection).Content,
-		render.Message(r, a.expected),
-		render.Message(r, a.best.Message),
-	)
-}
-
-// buildDiff adds a "message diff" section to the result.
-func (a *MessageAssertion) buildDiff(r render.Renderer, rep *Report) {
-	render.WriteDiff(
-		&rep.Section("Message Diff").Content,
-		render.Message(r, a.expected),
-		render.Message(r, a.best.Message),
-	)
+	a.buildDiff(r, rep)
 }
 
 // buildResultUnexpectedRole builds the assertion result when there is a
